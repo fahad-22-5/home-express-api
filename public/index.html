@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SSD File Browser</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    .blur-bg {
+      filter: blur(3px);
+      pointer-events: none;
+    }
+    body {
+      background-color: #121212;
+      color: #eee;
+      font-family: sans-serif;
+      margin: 0;
+      padding: 16px;
+    }
+    h1 {
+      color: #90caf9;
+      font-size: 1.5em;
+      margin-bottom: 8px;
+    }
+    #path {
+      margin-bottom: 12px;
+      font-size: 0.85em;
+      color: #bbb;
+      word-wrap: break-word;
+    }
+    #loading {
+      font-size: 0.9em;
+      color: #90caf9;
+      margin-bottom: 10px;
+      display: none;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+      gap: 12px;
+    }
+    .item {
+      background: #1e1e1e;
+      padding: 10px;
+      border-radius: 6px;
+      text-align: center;
+      transition: background 0.2s;
+    }
+    .item:hover {
+      background: #2c2c2c;
+    }
+    .thumb {
+      width: 80px;
+      height: 80px;
+      object-fit: cover;
+      margin-bottom: 6px;
+      border-radius: 4px;
+    }
+    .emoji {
+      font-size: 64px;
+      margin-bottom: 6px;
+    }
+    .name {
+      font-size: 0.75em;
+      color: #90caf9;
+      word-wrap: break-word;
+    }
+    #viewer {
+      position: fixed; top:0; left:0; width:100%; height:100%;
+      background: rgba(0,0,0,0.9);
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 9999;
+    }
+    #viewer img {
+      max-width: 90%;
+      max-height: 80%;
+      margin-bottom: 10px;
+    }
+    #viewer a {
+      color: #90caf9;
+      font-size: 1.2em;
+      text-decoration: none;
+      border: 1px solid #90caf9;
+      padding: 6px 12px;
+      border-radius: 4px;
+    }
+    #upload-overlay {
+      position: fixed; top:0; left:0; width:100%; height:100%;
+      background: rgba(144,202,249,0.1);
+      border: 4px dashed #90caf9;
+      color: #90caf9;
+      font-size: 2em;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    #spinner {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      z-index: 10000;
+    }
+    #spinner div {
+      border: 4px solid #ccc;
+      border-top: 4px solid #90caf9;
+      border-radius: 50%;
+      width: 40px; height: 40px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    #toast {
+      position: fixed; bottom: 20px; left: 50%;
+      transform: translateX(-50%);
+      background: #333;
+      color: #eee;
+      padding: 10px 20px;
+      border-radius: 6px;
+      display: none;
+      z-index: 10000;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <div id="main-content">
+    <h1>📁 SSD File Browser</h1>
+    <div id="path"></div>
+    <div id="loading">Loading...</div>
+    <div class="grid" id="file-grid"></div>
+  </div>
+
+    <div id="viewer">
+    <button id="prev-btn" style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 10px; font-size: 20px; cursor: pointer;">❮</button>
+    <img id="viewer-img" src="" style="display: none;">
+    <video id="viewer-video" src="" controls style="display: none; max-width: 90%; max-height: 80%; margin-bottom: 10px;"></video>
+    <button id="next-btn" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 10px; font-size: 20px; cursor: pointer;">❯</button>
+    <a id="viewer-download" href="#" download style="position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);">⬇️ Download</a>
+  </div>
+
+  <div id="upload-overlay">Drop file to upload</div>
+  <div id="spinner"><div></div></div>
+  <div id="toast"></div>
+
+  <script>
+        let currentDir = '';
+    let mediaFiles = [];
+    let currentFileIndex = -1;
+
+    function showSpinner(show) {
+      document.getElementById('spinner').style.display = show ? 'block' : 'none';
+      const content = document.getElementById('main-content');
+      if (show) {
+        content.classList.add('blur-bg');
+      } else {
+        content.classList.remove('blur-bg');
+      }
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.innerText = message;
+      toast.style.display = 'block';
+      setTimeout(() => {
+        toast.style.display = 'none';
+      }, 3000);
+    }
+
+    function getIcon(item) {
+      if (item.isDirectory) return '<div class="emoji">📁</div>';
+      const ext = item.name.split('.').pop().toLowerCase();
+      const encodedPath = encodeURIComponent(currentDir ? currentDir + '/' + item.name : item.name);
+      if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
+        return `<img src="/api/thumbnail?path=${encodedPath}" class="thumb">`;
+      }
+      if (['mp4', 'avi', 'mkv'].includes(ext)) return '<div class="emoji">🎬</div>';
+      if (['mp3', 'wav'].includes(ext)) return '<div class="emoji">🎵</div>';
+      if (['pdf'].includes(ext)) return '<div class="emoji">📄</div>';
+      return '<div class="emoji">📄</div>';
+    }
+
+    function fetchFiles(dir = '', push = true) {
+      document.getElementById('loading').style.display = 'block';
+      fetch(`/api/list?dir=${encodeURIComponent(dir)}`)
+        .then(res => res.json())
+        .then(data => {
+          document.getElementById('loading').style.display = 'none';
+          currentDir = dir;
+          if (push) {
+            const url = dir ? `#${encodeURIComponent(dir)}` : '#';
+            history.pushState({ dir }, '', url);
+          }
+          document.getElementById('path').innerText = 'Current: /' + dir;
+          const grid = document.getElementById('file-grid');
+          grid.innerHTML = '';
+
+          mediaFiles = data.filter(item => !item.isDirectory && (['jpg', 'jpeg', 'png', 'gif'].includes(item.name.split('.').pop().toLowerCase()) || ['mp4', 'avi', 'mkv'].includes(item.name.split('.').pop().toLowerCase())));
+
+          if (dir) {
+            const upItem = document.createElement('div');
+            upItem.className = 'item';
+            upItem.innerHTML = `<div class="emoji">⬆️</div><div class="name">..</div>`;
+            upItem.onclick = goUp;
+            grid.appendChild(upItem);
+          }
+
+          data.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'item';
+            div.innerHTML = `${getIcon(item)}<div class="name">${item.name}</div>`;
+
+            if (item.isDirectory) {
+              div.onclick = () => fetchFiles(`${dir ? dir + '/' : ''}${item.name}`);
+            } else {
+              const filePath = `${dir ? dir + '/' : ''}${item.name}`;
+              if (mediaFiles.find(f => `${currentDir ? currentDir + '/' : ''}${f.name}` === filePath)) {
+                div.onclick = () => viewFile(filePath);
+              } else {
+                div.onclick = () => window.open(`/api/download?path=${encodeURIComponent(filePath)}`, '_blank');
+              }
+            }
+
+            grid.appendChild(div);
+          });
+        })
+        .catch(err => {
+          console.error('Error loading files', err);
+          document.getElementById('loading').style.display = 'none';
+        });
+    }
+
+    function goUp() {
+      const parts = currentDir.split('/').filter(p => p);
+      parts.pop();
+      fetchFiles(parts.join('/'));
+    }
+
+    function viewFile(filePath) {
+      currentFileIndex = mediaFiles.findIndex(item => `${currentDir ? currentDir + '/' : ''}${item.name}` === filePath);
+      if (currentFileIndex === -1) return;
+
+      const item = mediaFiles[currentFileIndex];
+      const ext = item.name.split('.').pop().toLowerCase();
+      const url = `/api/download?path=${encodeURIComponent(filePath)}`;
+
+      const viewer = document.getElementById('viewer');
+      const img = document.getElementById('viewer-img');
+      const video = document.getElementById('viewer-video');
+
+      img.style.display = 'none';
+      video.style.display = 'none';
+      video.pause();
+
+      if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
+        img.src = url;
+        img.style.display = 'block';
+      } else if (['mp4', 'avi', 'mkv'].includes(ext)) {
+        video.src = url;
+        video.style.display = 'block';
+        video.play();
+      }
+
+      document.getElementById('viewer-download').href = url;
+      viewer.style.display = 'flex';
+    }
+
+    function showNext() {
+      if (mediaFiles.length === 0) return;
+      currentFileIndex = (currentFileIndex + 1) % mediaFiles.length;
+      const nextFile = mediaFiles[currentFileIndex];
+      const filePath = `${currentDir ? currentDir + '/' : ''}${nextFile.name}`;
+      viewFile(filePath);
+    }
+
+    function showPrev() {
+      if (mediaFiles.length === 0) return;
+      currentFileIndex = (currentFileIndex - 1 + mediaFiles.length) % mediaFiles.length;
+      const prevFile = mediaFiles[currentFileIndex];
+      const filePath = `${currentDir ? currentDir + '/' : ''}${prevFile.name}`;
+      viewFile(filePath);
+    }
+
+    document.getElementById('viewer').onclick = (e) => {
+      if (e.target.id === 'viewer') {
+        document.getElementById('viewer').style.display = 'none';
+        const video = document.getElementById('viewer-video');
+        video.pause();
+      }
+    };
+
+    document.getElementById('next-btn').onclick = showNext;
+    document.getElementById('prev-btn').onclick = showPrev;
+
+    document.addEventListener('keydown', (e) => {
+      if (document.getElementById('viewer').style.display !== 'flex') return;
+      if (e.key === 'ArrowRight') {
+        showNext();
+      } else if (e.key === 'ArrowLeft') {
+        showPrev();
+      } else if (e.key === 'Escape') {
+        document.getElementById('viewer').style.display = 'none';
+        const video = document.getElementById('viewer-video');
+        video.pause();
+      }
+    });
+
+    window.onpopstate = (event) => {
+      const dir = event.state ? event.state.dir : '';
+      fetchFiles(dir, false);
+    };
+
+    window.onload = () => {
+      const initialDir = location.hash ? decodeURIComponent(location.hash.substring(1)) : '';
+      fetchFiles(initialDir);
+    };
+
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      document.getElementById('upload-overlay').style.display = 'flex';
+    });
+
+    window.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget === null || e.relatedTarget.nodeName === 'HTML') {
+        document.getElementById('upload-overlay').style.display = 'none';
+      }
+    });
+
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      document.getElementById('upload-overlay').style.display = 'none';
+
+      const files = e.dataTransfer.files;
+      if (files.length === 0) return;
+
+      const file = files[0];
+      const formData = new FormData();
+      formData.append('file', file);
+
+      showSpinner(true);
+
+      fetch(`/api/upload?dir=${encodeURIComponent(currentDir)}`, {
+        method: 'POST',
+        body: formData
+      })
+      .then(res => res.json())
+      .then(data => {
+        showSpinner(false);
+        if (data.success) {
+          showToast(`✅ Uploaded: ${data.file}`);
+          fetchFiles(currentDir);
+        } else {
+          showToast(`❌ ${data.error || 'Upload failed!'}`);
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        showSpinner(false);
+        showToast('❌ Upload error!');
+      });
+    });
+  </script>
+</body>
+</html>

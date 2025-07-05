@@ -1,0 +1,19 @@
+{
+  "name": "home-express-api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "basic-auth": "^2.0.1",
+    "express": "^5.1.0",
+    "multer": "^2.0.1",
+    "selfsigned": "^2.4.1",
+    "sharp": "^0.34.2"
+  }
+}
