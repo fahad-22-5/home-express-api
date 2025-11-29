@@ -243,7 +243,8 @@
 
       const item = mediaFiles[currentFileIndex];
       const ext = item.name.split('.').pop().toLowerCase();
-      const url = `/api/download?path=${encodeURIComponent(filePath)}`;
+      const mediaUrl = `/api/media?path=${encodeURIComponent(filePath)}`;
+      const downloadUrl = `/api/download?path=${encodeURIComponent(filePath)}`;
 
       const viewer = document.getElementById('viewer');
       const img = document.getElementById('viewer-img');
@@ -254,15 +255,15 @@
       video.pause();
 
       if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
-        img.src = url;
+        img.src = mediaUrl;
         img.style.display = 'block';
       } else if (['mp4', 'avi', 'mkv'].includes(ext)) {
-        video.src = url;
+        video.src = mediaUrl;
         video.style.display = 'block';
         video.play();
       }
 
-      document.getElementById('viewer-download').href = url;
+      document.getElementById('viewer-download').href = downloadUrl;
       viewer.style.display = 'flex';
     }
 
@@ -327,39 +328,127 @@
       }
     });
 
-    window.addEventListener('drop', (e) => {
-      e.preventDefault();
-      document.getElementById('upload-overlay').style.display = 'none';
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.getElementById('upload-overlay').style.display = 'none';
+  const files = e.dataTransfer.files;
+  if (!files || files.length === 0) return;
 
-      const files = e.dataTransfer.files;
-      if (files.length === 0) return;
+  Array.from(files).forEach(file => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('targetDir', currentDir); // ✅ send current folder
 
-      const file = files[0];
-      const formData = new FormData();
-      formData.append('file', file);
+  fetch(`/api/upload`, {  // remove ?dir= since we send it in body
+    method: 'POST',
+    body: formData
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.accepted) {
+      uploads.set(data.jobId, { file: data.file || data.filename, status: 'queued' });
+      renderUploads();
+      pollJobStatuses();
+      showToast(`🧺 Queued: ${data.file}`);
+      setTimeout(() => fetchFiles(currentDir, false), 3000);
+    } else {
+      showToast(`❌ ${data.error || 'Failed to queue upload'}`);
+    }
+  })
+  .catch(err => {
+    console.error(err);
+    showToast('❌ Upload enqueue error!');
+  });
+});
+});
 
-      showSpinner(true);
 
-      fetch(`/api/upload?dir=${encodeURIComponent(currentDir)}`, {
-        method: 'POST',
-        body: formData
-      })
-      .then(res => res.json())
-      .then(data => {
-        showSpinner(false);
-        if (data.success) {
-          showToast(`✅ Uploaded: ${data.file}`);
-          fetchFiles(currentDir);
-        } else {
-          showToast(`❌ ${data.error || 'Upload failed!'}`);
+    const uploads = new Map(); // jobId -> {file, status}
+
+function renderUploads() {
+  const panel = document.getElementById('uploads-panel');
+  const list = document.getElementById('uploads-list');
+
+  if (uploads.size === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = 'block';
+
+  const items = [];
+  uploads.forEach((v, id) => {
+    let status = v.status || 'queued'; // default queued
+    const icon =
+      status === 'done' ? '✅' :
+      status === 'error' || status === 'failed' ? '❌' :
+      status === 'processing' ? '⏳' :
+      '🕓';
+
+    items.push(`
+      <div style="margin:6px 0; display:flex; justify-content:space-between; gap:8px;">
+        <span title="${id}" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px;">
+          ${v.file}
+        </span>
+        <span>${icon} ${status}</span>
+      </div>
+    `);
+  });
+
+  list.innerHTML = items.join('');
+}
+
+
+function pollJobStatuses() {
+  const ids = Array.from(uploads.keys());
+  if (ids.length === 0) return;
+
+  fetch(`/api/jobs?ids=${encodeURIComponent(ids.join(','))}`)
+    .then(r => r.json())
+    .then(arr => {
+      let changed = false;
+      for (const j of arr) {
+        const prev = uploads.get(j.id);
+        if (!prev) continue;
+
+        if (j.status === "done" || j.status === "error") {
+          uploads.set(j.id, { file: prev.file, status: j.status });
+          renderUploads();
+          showToast(`${j.status === "done" ? "✅ Upload complete" : "❌ Upload failed"}: ${prev.file}`);
+
+          // auto-remove after 3s
+          setTimeout(() => {
+            uploads.delete(j.id);
+            renderUploads();
+          }, 3000);
+        } else if (prev.status !== j.status) {
+          uploads.set(j.id, { file: prev.file, status: j.status });
+          changed = true;
         }
-      })
-      .catch(err => {
-        console.error(err);
-        showSpinner(false);
-        showToast('❌ Upload error!');
-      });
-    });
+      }
+      if (changed) renderUploads();
+    })
+    .catch(() => {});
+}
+
+// poll every 2s
+setInterval(pollJobStatuses, 2000);
+
+document.getElementById('clear-completed').onclick = () => {
+  for (const [id, v] of uploads) {
+    if (v.status === 'done' || v.status === 'error') uploads.delete(id);
+  }
+  renderUploads();
+};
+
   </script>
+  <div id="uploads-panel" style="position:fixed; right:16px; bottom:16px; background:#1e1e1e; padding:12px; border-radius:8px; width:300px; max-height:50vh; overflow:auto; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+    <strong>Uploads</strong>
+    <button id="clear-completed" style="background:#2c2c2c; color:#eee; border:none; padding:4px 8px; border-radius:4px; cursor:pointer;">Clear done</button>
+  </div>
+  <div id="uploads-list" style="font-size:12px; color:#ccc;"></div>
+</div>
+
 </body>
 </html>
